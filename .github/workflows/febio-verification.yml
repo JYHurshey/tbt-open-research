@@ -1,42 +1,32 @@
-name: FEBio reference test sources
+name: Public FEBio repository reference discovery
 on:
   push:
     branches: [verification/febio-runtime-20261019]
 permissions:
   contents: read
 jobs:
-  sources:
+  metadata:
     runs-on: ubuntu-22.04
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
-      - name: Fetch official reference tests and public repository interface
+      - name: Read public model metadata, without accounts or protected downloads
         run: |
           mkdir -p evidence
-          cat > acquire_tests.py <<'PY'
-          import pathlib,urllib.request,urllib.parse,json,hashlib,re,time
-          P=pathlib.Path('evidence');out={'files':[],'errors':[],'note':'official numerical tests; not a cervical model or TBT validation'}
-          def save(url,name):
+          python - <<'PY'
+          import pathlib,urllib.request,json,hashlib,re
+          P=pathlib.Path('evidence'); report=[]
+          urls=[('https://repo.febio.org/modelRepo/metadata-User%20Projects.js','user_projects_metadata.js'),('https://repo.febio.org/modelRepo/metadata-Test%20Suite.js','test_metadata.js')]
+          for url,name in urls:
               try:
-                  with urllib.request.urlopen(urllib.request.Request(url,headers={'User-Agent':'FEBio-research-reference/1.0'}),timeout=90) as r:b=r.read()
-                  q=P/name;q.parent.mkdir(parents=True,exist_ok=True);q.write_bytes(b)
-                  out['files'].append({'path':name,'url':url,'sha256':hashlib.sha256(b).hexdigest(),'bytes':len(b)});return b
-              except Exception as e:out['errors'].append({'url':url,'error':str(e)});return b''
-          base='https://raw.githubusercontent.com/febiosoftware/TestSuite/a6fd1d0372dbbb9afc7e84a0538b001c7b1cc0f7/'
-          tests=['ri01','ri09','ri10','ri11','rj01','rj07','rj08','rj11','rj12','co01','co02','co08','co16','co18','co44','co46','co61','co62','di01','di02','di05','ma05','ma20','ma21','dy01','dy05','dy10','dy16']
-          for t in tests:save(base+'Verify/'+t+'.feb','testsuite/Verify/'+t+'.feb')
-          for t in ['code/linuxGoldStandards.py','code/runTests.py','code/tools.py']:save(base+t,'testsuite/'+t)
-          b=save('https://repo.febio.org/modelRepo/UserProjects','repo/user_projects.html')
-          for n,u in enumerate(re.findall(r'<script[^>]+src=[\"\x27]([^\"\x27]+)',b.decode('utf-8','replace'))):
-              url=urllib.parse.urljoin('https://repo.febio.org/modelRepo/UserProjects',u)
-              if urllib.parse.urlparse(url).hostname=='repo.febio.org':save(url,'repo/script_'+str(n)+'.js')
-          (P/'manifest.json').write_text(json.dumps(out,indent=2));print(json.dumps(out,indent=2))
+                  with urllib.request.urlopen(urllib.request.Request(url,headers={'User-Agent':'FEBio-cervical-reference-research/1.0'}),timeout=60) as r: b=r.read()
+                  (P/name).write_bytes(b);report.append({'url':url,'file':name,'sha256':hashlib.sha256(b).hexdigest(),'bytes':len(b)})
+              except Exception as e:report.append({'url':url,'error':str(e)})
+          (P/'provenance.json').write_text(json.dumps(report,indent=2)); print(json.dumps(report,indent=2))
           PY
-          python acquire_tests.py
-          cp acquire_tests.py evidence/
-      - name: Save source provenance
+      - name: Save public metadata
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: official-febio-test-sources
+          name: public-febio-model-metadata
           path: evidence/
           retention-days: 7
