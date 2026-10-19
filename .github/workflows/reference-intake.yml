@@ -1,0 +1,59 @@
+name: Public cervical reference intake
+on:
+  push:
+    branches: [reference-integration-20261020]
+    paths: [.github/workflows/reference-intake.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  retrieve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Inspect official public sources without credentials
+        run: |
+          mkdir -p public-reference-audit
+          python3 - <<'PY'
+          import urllib.request,urllib.error,urllib.parse,json,hashlib,re,pathlib,time
+          root=pathlib.Path('public-reference-audit'); records=[]
+          urls=[
+            ('simtk_project','https://simtk.org/projects/febiocervical'),
+            ('simtk_files','https://simtk.org/frs/?group_id=1688'),
+            ('simtk_26_confirm','https://simtk.org/frs/download_confirm.php/file/5742/26yoF_model.zip?group_id=1688'),
+            ('febio_repository','https://repo.febio.org/modelRepo/UserProjects'),
+            ('utah_thesis_search','https://collections.lib.utah.edu/search?q=Febio%20finite%20element%20models%20of%20the%20human%20cervical%20spine'),
+          ]
+          for name,url in urls:
+            rec={'name':name,'url':url,'timestamp_utc':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())}
+            try:
+              req=urllib.request.Request(url,headers={'User-Agent':'TBT-Research-Public-Reference-Intake/1.0'})
+              with urllib.request.urlopen(req,timeout=25) as r:
+                body=r.read(32*1024*1024+1);rec.update(status=r.status,final_url=r.url,content_type=r.headers.get('Content-Type',''),bytes=len(body))
+              if len(body)>32*1024*1024: raise ValueError('Response exceeds bounded intake size')
+              ext='.zip' if body[:4]==b'PK\x03\x04' else '.html'
+              (root/(name+ext)).write_bytes(body);rec['sha256']=hashlib.sha256(body).hexdigest()
+              text=body.decode('utf-8','replace') if ext!='.zip' else ''
+              rec['login_redirect_detected']=bool(re.search(r"window\.(?:top\.)?location\s*=.*account/login",text)) or '/account/login' in rec['final_url']
+              rec['links']=re.findall(r'(?:href|src)=[\"\']([^\"\']+)',text)
+              if name=='febio_repository':
+                for i,src in enumerate(re.findall(r'<script[^>]+src=[\"\']([^\"\']+)',text)):
+                  absolute=urllib.parse.urljoin(url,src)
+                  if urllib.parse.urlparse(absolute).hostname!='repo.febio.org': continue
+                  try:
+                    data=urllib.request.urlopen(absolute,timeout=15).read(2*1024*1024)
+                    (root/('repository_script_'+str(i)+'.js')).write_bytes(data)
+                  except Exception as e: rec.setdefault('script_errors',[]).append(str(e))
+            except Exception as e:
+              rec['error']=str(e)
+            records.append(rec)
+          (root/'manifest.json').write_text(json.dumps({'credential_use':False,'authentication_bypass':False,'records':records},indent=2))
+          for r in records: print(r['name'],r.get('status'),r.get('bytes'),r.get('error',''),r.get('login_redirect_detected'))
+          PY
+      - name: Store source responses and acquisition evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-reference-audit
+          path: public-reference-audit/
+          retention-days: 7
+          if-no-files-found: error
