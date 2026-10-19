@@ -1,0 +1,44 @@
+name: Published reference package
+on:
+  push:
+    branches: [reference-integration-20261020]
+    paths: [.github/workflows/reference-package.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Request known publicly published reference files
+        run: |
+          mkdir -p published-reference
+          python3 - <<'PY'
+          import urllib.request, pathlib,json,hashlib,time,zipfile,io
+          root=pathlib.Path('published-reference');rows=[]
+          license_url='https://simtk.org/frs/?group_id=1688'
+          try: (root/'publisher_license_and_listing.html').write_bytes(urllib.request.urlopen(license_url,timeout=25).read())
+          except Exception as e: print(e)
+          for num,name in [(5742,'26yoF_model.zip'),(5743,'59yoF_model.zip'),(5744,'64yoF_model.zip')]:
+            url='https://simtk.org/frs/download.php/file/'+str(num)+'/'+name
+            row={'url':url,'file':name,'retrieved_utc':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'credentials':False}
+            try:
+              with urllib.request.urlopen(url,timeout=40) as r:
+                b=r.read(50*1024*1024+1);row.update(status=r.status,final_url=r.url,bytes=len(b),content_type=r.headers.get('Content-Type'))
+              if len(b)>50*1024*1024:raise ValueError('size limit')
+              if '/account/' in row['final_url'] or b[:4]!=b'PK\x03\x04':
+                row['acquired']=False;row['response_excerpt']=b[:400].decode('utf-8','replace')
+              else:
+                z=zipfile.ZipFile(io.BytesIO(b));row.update(acquired=True,sha256=hashlib.sha256(b).hexdigest(),entries=z.namelist());(root/name).write_bytes(b)
+            except Exception as e:row.update(acquired=False,error=str(e))
+            rows.append(row);print(json.dumps(row),flush=True)
+          (root/'manifest.json').write_text(json.dumps({'attribution':'Copyright (c) 2019 University of Utah; Herron, Park, Dailey, Brockmeyer, Ellis','license':'CC BY-NC 3.0 as stated by public author distribution; research use only','license_url':'https://creativecommons.org/licenses/by-nc/3.0/','records':rows},indent=2))
+          PY
+      - name: Preserve research-only reference files and public license evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: published-reference
+          path: published-reference/
+          retention-days: 7
+          if-no-files-found: error
