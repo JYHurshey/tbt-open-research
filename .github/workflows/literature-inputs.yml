@@ -1,0 +1,37 @@
+name: Open literature and model inputs
+on:
+  push:
+    branches: [reference-integration-20261020]
+    paths: [.github/workflows/literature-inputs.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  get:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Retrieve publicly accessible scholarly sources
+        run: |
+          mkdir -p literature-inputs
+          python3 - <<'PY'
+          import urllib.request,pathlib,json,hashlib
+          root=pathlib.Path('literature-inputs');log=[]
+          sources=[('26yoF_model.zip','https://simtk.org/frs/download.php?file_id=5742'),('rotation_article.html','https://link.springer.com/article/10.1186/s12891-025-08991-4'),('rotation_table.html','https://link.springer.com/article/10.1186/s12891-025-08991-4/tables/1'),('hyoid.xml','https://journals.plos.org/plosone/article/file?id=10.1371/journal.pone.0199912&type=manuscript'),('silva2022.xml','https://www.mdpi.com/2076-3417/12/21/11295/xml'),('ccj_page.html','https://simtk.org/projects/febioccj')]
+          for name,url in sources:
+            row={'name':name,'url':url}
+            try:
+              with urllib.request.urlopen(url,timeout=35) as r: b=r.read(50*1024*1024+1);row.update(status=r.status,final_url=r.url,bytes=len(b))
+              if len(b)>50*1024*1024:raise ValueError('size limit')
+              if '/account/login' in row['final_url']:raise ValueError('Authentication required; stop')
+              if name.endswith('.zip') and b[:4]!=b'PK\x03\x04':row['response_excerpt']=b[:300].decode('utf8','replace');raise ValueError('Not a model ZIP')
+              (root/name).write_bytes(b);row.update(acquired=True,sha256=hashlib.sha256(b).hexdigest())
+            except Exception as e:row.update(acquired=False,error=str(e))
+            log.append(row);print(json.dumps(row),flush=True)
+          (root/'manifest.json').write_text(json.dumps(log,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: literature-inputs
+          path: literature-inputs/
+          retention-days: 7
