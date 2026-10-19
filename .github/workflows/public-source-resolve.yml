@@ -1,0 +1,41 @@
+name: Canonical public reference sources
+on:
+  push:
+    branches: [reference-integration-20261020]
+    paths: [.github/workflows/public-source-resolve.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  get:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Get publicly licensed known reference files and article metadata
+        run: |
+          mkdir -p resolved-reference
+          python3 - <<'PY'
+          import urllib.request, pathlib, json, hashlib, time, zipfile, io
+          root=pathlib.Path('resolved-reference'); rows=[]
+          urls=[('26yoF_model.zip','https://simtk.org/frs/download.php/5742/26yoF_model.zip'),('59yoF_model.zip','https://simtk.org/frs/download.php/5743/59yoF_model.zip'),('64yoF_model.zip','https://simtk.org/frs/download.php/5744/64yoF_model.zip'),('paper_openalex.json','https://api.openalex.org/works/https://doi.org/10.1016/j.jbiomech.2020.110077'),('publisher_license.html','https://simtk.org/frs/?group_id=1688')]
+          for name,url in urls:
+            rec={'url':url,'filename':name,'utc':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())}
+            try:
+              with urllib.request.urlopen(url,timeout=45) as r:
+                data=r.read(50*1024*1024+1);rec.update(status=r.status,final_url=r.url,content_type=r.headers.get('Content-Type',''),size=len(data))
+              if len(data)>50*1024*1024: raise ValueError('size limit')
+              if '/account/login' in rec['final_url']: raise ValueError('Authentication required; stop')
+              if name.endswith('.zip'):
+                if data[:4]!=b'PK\x03\x04':
+                  rec['response_excerpt']=data[:400].decode('utf-8','replace');raise ValueError('not a ZIP; no authentication bypass attempted')
+                rec['entries']=zipfile.ZipFile(io.BytesIO(data)).namelist()
+              (root/name).write_bytes(data);rec.update(acquired=True,sha256=hashlib.sha256(data).hexdigest())
+            except Exception as e:rec.update(acquired=False,error=str(e))
+            rows.append(rec);print(json.dumps(rec),flush=True)
+          (root/'manifest.json').write_text(json.dumps({'credentials':False,'model_attribution':'University of Utah 2019; Herron et al. 2020; published CC BY-NC 3.0','records':rows},indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: resolved-reference
+          path: resolved-reference/
+          retention-days: 7
