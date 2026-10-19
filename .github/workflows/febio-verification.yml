@@ -1,0 +1,83 @@
+name: FEBio runtime verification
+on:
+  push:
+    branches: [verification/febio-runtime-20261019]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  verification:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - name: Acquire official runtime and attempt official benchmark
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p evidence runtime engine
+          cat > verify_runtime.py <<'PY'
+          import os, json, pathlib, hashlib, zipfile, urllib.request, subprocess, shutil, re, time
+          P=pathlib.Path.cwd(); E=P/'evidence'; E.mkdir(exist_ok=True)
+          report={'kind':'runtime-and-official-example-smoke-test','biological_validation':False,'tbt_analysis':False,'started_utc':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())}
+          def get(url, target, auth=False):
+              h={'User-Agent':'FEBio-reference-verification/1.0'}
+              if auth: h['Authorization']='Bearer '+os.environ['GH_TOKEN']
+              with urllib.request.urlopen(urllib.request.Request(url,headers=h),timeout=120) as r:
+                  data=r.read()
+              pathlib.Path(target).write_bytes(data); return data
+          def run(args, name, env=None, cwd=None, timeout=90):
+              try:
+                  p=subprocess.run(args,capture_output=True,text=True,env=env,cwd=cwd,timeout=timeout)
+                  (E/(name+'.stdout')).write_text(p.stdout); (E/(name+'.stderr')).write_text(p.stderr)
+                  return {'returncode':p.returncode,'normal_termination':'N O R M A L' in p.stdout or 'NORMAL TERMINATION' in p.stdout}
+              except Exception as ex: return {'error':str(ex)}
+          runtime_url='https://files.pythonhosted.org/packages/8a/0a/160013c2e8920e7f4d5bfb0b46dbe9fdd37ff50adcc11a1bad674f22bd78/intel_openmp-2025.2.1-py2.py3-none-manylinux_2_28_x86_64.whl'
+          expected='4656e8e864998db776dbb6d045067f75c227f78c72943e07e15b0d1d65ff45c2'
+          try:
+              b=get(runtime_url,P/'runtime.whl'); sha=hashlib.sha256(b).hexdigest()
+              if sha!=expected: raise RuntimeError('Intel runtime digest mismatch')
+              z=zipfile.ZipFile(P/'runtime.whl'); saved=[]
+              for n in z.namelist():
+                  if n.endswith('libiomp5.so') or 'LICENSE' in n.upper() or 'COPYING' in n.upper():
+                      dest=E/'intel_runtime'/pathlib.Path(n).name; dest.parent.mkdir(exist_ok=True)
+                      dest.write_bytes(z.read(n)); saved.append(str(dest.relative_to(E)))
+              report['intel_runtime']={'source':runtime_url,'sha256':sha,'files':saved}
+          except Exception as ex: report['intel_runtime']={'error':str(ex)}
+          engine_url='https://api.github.com/repos/febiosoftware/FEBio/actions/artifacts/11555216264/zip'
+          try:
+              b=get(engine_url,P/'engine.zip',True); sha=hashlib.sha256(b).hexdigest()
+              if sha!='8955ea27038956908db2c03dcc4afb84406c86e1b13f76f994d355b42ba2e97f': raise RuntimeError('FEBio digest mismatch')
+              zipfile.ZipFile(P/'engine.zip').extractall(P/'engine')
+              exe=next((P/'engine').rglob('febio4')); exe.chmod(0o755)
+              env=os.environ.copy(); env.pop('GH_TOKEN',None)
+              env['LD_LIBRARY_PATH']=str(E/'intel_runtime')+':'+str(exe.parent.parent/'lib')
+              env['OMP_NUM_THREADS']='1'
+              report['engine']={'source':engine_url,'sha256':sha,'commit':'fc7c54bad31a8dfd70e03a4d8848771e6ce91624','version_class':'develop snapshot, not paper-matched stable release'}
+              report['ldd']=run(['ldd',str(exe)],'ldd',env)
+              report['version']=run([str(exe),'-version'],'version',env,timeout=20)
+              src='https://raw.githubusercontent.com/febiosoftware/TestSuite/a6fd1d0372dbbb9afc7e84a0538b001c7b1cc0f7/Verify/ri11.feb'
+              model=P/'ri11.feb'; b=get(src,model)
+              report['official_example']={'source':src,'sha256':hashlib.sha256(b).hexdigest(),'interpretation':'rigid Euler rotation smoke test, not cervical validation'}
+              report['run']=run([str(exe),'-i',str(model),'-o',str(E/'ri11.log')],'ri11',env,timeout=120)
+              for f in P.glob('ri11*.txt'): shutil.copy2(f,E/f.name)
+          except Exception as ex: report['engine_error']=str(ex)
+          # Public distribution reachability only: no account, authorization bypass, or model redistribution.
+          for key,url in [('simtk_project','https://simtk.org/projects/febiocervical'),('simtk_downloads','https://simtk.org/frs/?group_id=1688')]:
+              try:
+                  b=get(url,E/(key+'.html'))
+                  text=b.decode('utf-8','replace')
+                  links=re.findall(r'href=[\"\x27]([^\"\x27]+)',text)
+                  report[key]={'bytes':len(b),'download_links':[s for s in links if 'download' in s.lower() or '.feb' in s.lower() or '.zip' in s.lower()]}
+              except Exception as ex: report[key]={'error':str(ex)}
+          (E/'run_status.json').write_text(json.dumps(report,indent=2))
+          print(json.dumps(report,indent=2))
+          PY
+          python verify_runtime.py
+          cp verify_runtime.py evidence/
+      - name: Save reproducible diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: febio-runtime-evidence
+          path: evidence/
+          retention-days: 7
