@@ -1,0 +1,47 @@
+name: Public FEBio model catalogue
+on:
+  push:
+    branches: [reference-integration-20261020]
+    paths: [.github/workflows/reference-catalogue.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  retrieve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Read public catalogue and download matching public models
+        run: |
+          mkdir -p reference-catalogue
+          python3 - <<'PY'
+          import urllib.request,json,hashlib,pathlib,time,re
+          root=pathlib.Path('reference-catalogue'); logs=[]
+          def retrieve(name,url,limit=100*1024*1024):
+              rec={'url':url,'name':name,'utc':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())}
+              try:
+                  with urllib.request.urlopen(url,timeout=45) as r:
+                      body=r.read(limit+1);rec.update(status=r.status,final_url=r.url,content_type=r.headers.get('Content-Type',''),bytes=len(body))
+                  if len(body)>limit:raise ValueError('response size limit')
+                  if '/login' in rec['final_url']:raise ValueError('Authentication required; stopping this source')
+                  (root/name).write_bytes(body);rec['sha256']=hashlib.sha256(body).hexdigest();logs.append(rec);return body
+              except Exception as e:rec['error']=str(e);logs.append(rec);return None
+          body=retrieve('metadata.js','https://repo.febio.org/modelRepo/metadata-User%20Projects.js')
+          if body:
+              s=body.decode('utf-8'); a=s.find('['); b=s.rfind(']'); projects=json.loads(s[a:b+1])
+              hits=[p for p in projects if re.search('cervical|craniocervical|occipito|atlanto',json.dumps(p),re.I)]
+              (root/'matching_projects.json').write_text(json.dumps(hits,indent=2))
+              for p in hits[:6]:
+                  pid=str(p['ID']);print(pid,p.get('name'),p.get('owner'),flush=True)
+                  retrieve('project_'+pid+'.html','https://repo.febio.org/permalink/project/'+pid)
+                  data=retrieve('project_'+pid+'.zip','https://repo.febio.org/modelRepo/api/v1.05/files/0/'+pid)
+                  if data and data[:4]!=b'PK\x03\x04':print('Not a ZIP:',pid,flush=True)
+          (root/'manifest.json').write_text(json.dumps({'sources':'Official public catalogue and links emitted by projectBrowser.js','no_credentials':True,'records':logs},indent=2))
+          PY
+      - name: Preserve official public source files
+        uses: actions/upload-artifact@v4
+        with:
+          name: reference-catalogue
+          path: reference-catalogue/
+          retention-days: 7
+          if-no-files-found: error
